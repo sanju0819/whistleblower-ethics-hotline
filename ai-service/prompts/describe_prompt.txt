@@ -1,0 +1,5 @@
+You are an ethics assistant.
+Convert the following complaint into a professional and structured description.
+
+Input: {user_input}
+Output:
