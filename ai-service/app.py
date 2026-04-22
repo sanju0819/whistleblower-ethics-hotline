@@ -1,24 +1,34 @@
-from flask import Flask, request, jsonify
-from services.ai_service import generate_description
+import os
+from flask import Flask, jsonify
+from dotenv import load_dotenv
+
+load_dotenv()
+
+from routes.describe import describe_bp
 
 app = Flask(__name__)
 
-@app.route("/")
+# Register blueprints
+app.register_blueprint(describe_bp)
+
+
+@app.get("/")
 def home():
-    return jsonify({"message": "AI Service Running 🚀"})
+    return jsonify({
+        "message": "Whistleblower AI Service",
+        "status": "running",
+        "version": "1.0.0"
+    })
 
-@app.route("/describe", methods=["POST"])
-def describe():
-    data = request.get_json()
 
-    if not data or "text" not in data:
-        return jsonify({"error": "Missing 'text' field"}), 400
+@app.get("/health")
+def health():
+    return jsonify({
+        "status": "ok",
+        "model": "llama-3.3-70b-versatile",
+        "port": 5000
+    })
 
-    user_input = data["text"]
-
-    result = generate_description(user_input)
-
-    return jsonify({"description": result})
 
 if __name__ == "__main__":
-    app.run(port=5000, debug=True)
+    app.run(host="0.0.0.0", port=5000, debug=True)
