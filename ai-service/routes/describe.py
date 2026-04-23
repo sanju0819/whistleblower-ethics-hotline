@@ -3,7 +3,7 @@ from services.groq_client import describe_complaint
 
 describe_bp = Blueprint("describe", __name__)
 
-
+# Day 3 update
 @describe_bp.post("/describe")
 def describe():
     data = request.get_json(silent=True)

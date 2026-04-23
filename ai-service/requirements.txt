@@ -5,3 +5,4 @@ redis==5.0.7
 python-dotenv==1.0.1
 requests==2.32.3
 pytest==8.2.2
+# Day 3 update

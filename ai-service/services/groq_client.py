@@ -6,7 +6,7 @@ from groq import Groq
 from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
-
+# Day 3 update
 # Initialize Groq client once at module load
 client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 

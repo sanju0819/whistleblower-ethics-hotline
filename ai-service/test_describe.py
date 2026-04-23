@@ -7,7 +7,7 @@ Run this AFTER starting the Flask server:
 Then in another terminal:
     python test_describe.py
 """
-
+# Day 3 update
 import requests
 import json
 
