@@ -1,9 +1,0 @@
-.env
-venv/
-__pycache__/
-*.pyc
-*.pyo
-chroma_data/
-*.egg-info/
-.pytest_cache/
-# Day 3 update

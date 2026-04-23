@@ -1,8 +1,5 @@
 Flask==3.0.3
-groq==0.9.0
-flask-limiter==3.7.0
-redis==5.0.7
+flask-limiter==3.8.0
 python-dotenv==1.0.1
 requests==2.32.3
-pytest==8.2.2
-# Day 3 update
+Limits==3.13.0

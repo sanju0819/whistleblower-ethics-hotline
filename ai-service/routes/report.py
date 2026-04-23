@@ -1,6 +1,6 @@
 """
-POST /describe
-Accepts { "text": "..." } and returns a structured AI description of the report.
+POST /generate-report
+Accepts { "text": "..." } and returns a structured formal compliance report.
 """
 
 import logging
@@ -13,22 +13,21 @@ from routes.helpers import load_prompt, sanitise_input, extract_json
 
 logger = logging.getLogger(__name__)
 
-describe_bp = Blueprint("describe", __name__)
+report_bp = Blueprint("report", __name__)
 
-# Fallback returned when the AI service is unavailable
 FALLBACK_RESPONSE = {
-    "category": "Unknown",
-    "severity": "Unknown",
-    "summary": "AI description is temporarily unavailable.",
-    "key_entities": [],
-    "recommended_action": "Please review the report manually.",
+    "title": "Compliance Report — AI Unavailable",
+    "summary": "The AI report generation service is temporarily unavailable.",
+    "overview": "Please review the original submission manually and generate a report.",
+    "key_items": [],
+    "recommendations": [],
     "generated_at": None,
     "is_fallback": True,
 }
 
 
-@describe_bp.route("/describe", methods=["POST"])
-def describe():
+@report_bp.route("/generate-report", methods=["POST"])
+def generate_report():
     # ── Validate request body ──────────────────────────────────────────────────
     body = request.get_json(silent=True)
     if not body:
@@ -50,17 +49,17 @@ def describe():
     # ── Build prompt ───────────────────────────────────────────────────────────
     generated_at = datetime.now(timezone.utc).isoformat()
     try:
-        template = load_prompt("describe_prompt.txt")
+        template = load_prompt("report_prompt.txt")
         prompt = template.format(text=clean_text, generated_at=generated_at)
     except Exception as exc:
-        logger.error("Failed to load describe prompt: %s", exc)
+        logger.error("Failed to load report prompt: %s", exc)
         return jsonify({"error": "Internal server error loading prompt."}), 500
 
     # ── Call Groq ──────────────────────────────────────────────────────────────
     try:
-        raw_response = call_groq(prompt, temperature=0.3)
+        raw_response = call_groq(prompt, temperature=0.4, max_tokens=1500)
     except Exception as exc:
-        logger.error("Groq call failed for /describe: %s", exc)
+        logger.error("Groq call failed for /generate-report: %s", exc)
         fallback = dict(FALLBACK_RESPONSE)
         fallback["generated_at"] = generated_at
         return jsonify(fallback), 200
@@ -69,7 +68,9 @@ def describe():
     try:
         parsed = extract_json(raw_response)
     except ValueError as exc:
-        logger.error("JSON parse failed for /describe: %s | raw: %s", exc, raw_response[:300])
+        logger.error(
+            "JSON parse failed for /generate-report: %s | raw: %s", exc, raw_response[:300]
+        )
         fallback = dict(FALLBACK_RESPONSE)
         fallback["generated_at"] = generated_at
         return jsonify(fallback), 200

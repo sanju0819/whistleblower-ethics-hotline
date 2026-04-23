@@ -1,0 +1,37 @@
+You are a senior compliance officer advising on a whistleblower report.
+
+The report reads as follows:
+
+---
+{text}
+---
+
+Your task is to produce exactly 3 actionable recommendations for the compliance team.
+
+You MUST respond with ONLY a valid JSON object. Do NOT include any explanation, preamble, markdown fences, or extra text outside the JSON.
+
+Each recommendation must have:
+- "action_type": a short label for the type of action (e.g. "Investigation", "Policy Review", "Training", "Escalation", "Documentation", "Disciplinary Action")
+- "description": a clear, specific action the compliance team should take (1-2 sentences)
+- "priority": exactly one of "High", "Medium", or "Low"
+
+Return exactly this structure with no deviation:
+{{
+  "recommendations": [
+    {{
+      "action_type": "<type>",
+      "description": "<specific action>",
+      "priority": "<High|Medium|Low>"
+    }},
+    {{
+      "action_type": "<type>",
+      "description": "<specific action>",
+      "priority": "<High|Medium|Low>"
+    }},
+    {{
+      "action_type": "<type>",
+      "description": "<specific action>",
+      "priority": "<High|Medium|Low>"
+    }}
+  ]
+}}

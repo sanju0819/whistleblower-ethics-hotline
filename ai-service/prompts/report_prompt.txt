@@ -1,0 +1,27 @@
+You are a compliance documentation specialist.
+
+You have been asked to generate a formal compliance report based on the following whistleblower submission:
+
+---
+{text}
+---
+
+You MUST respond with ONLY a valid JSON object. Do NOT include any explanation, preamble, markdown fences, or extra text outside the JSON.
+
+Return exactly this structure:
+{{
+  "title": "<formal report title>",
+  "summary": "<executive summary in 2-3 sentences>",
+  "overview": "<detailed overview in 3-5 sentences covering who, what, where, when, and how>",
+  "key_items": [
+    "<key finding or fact 1>",
+    "<key finding or fact 2>",
+    "<key finding or fact 3>"
+  ],
+  "recommendations": [
+    "<recommended action 1>",
+    "<recommended action 2>",
+    "<recommended action 3>"
+  ],
+  "generated_at": "{generated_at}"
+}}
