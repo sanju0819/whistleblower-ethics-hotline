@@ -9,7 +9,7 @@ You have been asked to generate a formal compliance report based on the followin
 You MUST respond with ONLY a valid JSON object. Do NOT include any explanation, preamble, markdown fences, or extra text outside the JSON.
 
 Return exactly this structure:
-{{
+{
   "title": "<formal report title>",
   "summary": "<executive summary in 2-3 sentences>",
   "overview": "<detailed overview in 3-5 sentences covering who, what, where, when, and how>",
@@ -24,4 +24,4 @@ Return exactly this structure:
     "<recommended action 3>"
   ],
   "generated_at": "{generated_at}"
-}}
+}

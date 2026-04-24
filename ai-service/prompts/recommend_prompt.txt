@@ -16,22 +16,22 @@ Each recommendation must have:
 - "priority": exactly one of "High", "Medium", or "Low"
 
 Return exactly this structure with no deviation:
-{{
+{
   "recommendations": [
-    {{
+    {
       "action_type": "<type>",
       "description": "<specific action>",
       "priority": "<High|Medium|Low>"
-    }},
-    {{
+    },
+    {
       "action_type": "<type>",
       "description": "<specific action>",
       "priority": "<High|Medium|Low>"
-    }},
-    {{
+    },
+    {
       "action_type": "<type>",
       "description": "<specific action>",
       "priority": "<High|Medium|Low>"
-    }}
+    }
   ]
-}}
+}

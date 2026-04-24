@@ -6,7 +6,7 @@ Accepts { "text": "..." } and returns a structured formal compliance report.
 import logging
 from datetime import datetime, timezone
 
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, request, jsonify, g
 
 from services.groq_client import call_groq
 from routes.helpers import load_prompt, sanitise_input, extract_json
@@ -40,17 +40,25 @@ def generate_report():
     if len(raw_text) > 5000:
         return jsonify({"error": "Field 'text' must not exceed 5000 characters."}), 400
 
-    # ── Sanitise input ─────────────────────────────────────────────────────────
-    try:
-        clean_text = sanitise_input(raw_text)
-    except ValueError as exc:
-        return jsonify({"error": str(exc)}), 400
+    # ── Sanitise input (Fix #10: skip if middleware already handled it) ────────
+    if not getattr(g, "sanitised", False):
+        try:
+            clean_text = sanitise_input(raw_text)
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+    else:
+        clean_text = raw_text.strip()
 
     # ── Build prompt ───────────────────────────────────────────────────────────
     generated_at = datetime.now(timezone.utc).isoformat()
     try:
         template = load_prompt("report_prompt.txt")
-        prompt = template.format(text=clean_text, generated_at=generated_at)
+        # Use str.replace() for user-controlled fields to avoid KeyError on curly braces.
+        prompt = (
+            template
+            .replace("{text}", clean_text)
+            .replace("{generated_at}", generated_at)
+        )
     except Exception as exc:
         logger.error("Failed to load report prompt: %s", exc)
         return jsonify({"error": "Internal server error loading prompt."}), 500
@@ -74,5 +82,9 @@ def generate_report():
         fallback = dict(FALLBACK_RESPONSE)
         fallback["generated_at"] = generated_at
         return jsonify(fallback), 200
+
+    # I-1 FIX: Guarantee consistent envelope on all routes regardless of LLM output.
+    parsed.setdefault("is_fallback", False)
+    parsed.setdefault("generated_at", generated_at)
 
     return jsonify(parsed), 200

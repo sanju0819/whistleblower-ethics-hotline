@@ -14,12 +14,20 @@ logger = logging.getLogger(__name__)
 
 PROMPTS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "prompts")
 
+# Fix #9: Module-level cache — prompts are read from disk only once.
+_prompt_cache: dict[str, str] = {}
+
 
 def load_prompt(filename: str) -> str:
-    """Read a prompt template from the prompts/ directory."""
-    path = os.path.join(PROMPTS_DIR, filename)
-    with open(path, "r", encoding="utf-8") as fh:
-        return fh.read()
+    """
+    Read a prompt template from the prompts/ directory.
+    Results are cached in memory after the first read — prompts never change at runtime.
+    """
+    if filename not in _prompt_cache:
+        path = os.path.join(PROMPTS_DIR, filename)
+        with open(path, "r", encoding="utf-8") as fh:
+            _prompt_cache[filename] = fh.read()
+    return _prompt_cache[filename]
 
 
 # ── Input sanitisation ─────────────────────────────────────────────────────────
@@ -55,17 +63,35 @@ def sanitise_input(text: str) -> str:
 
 def extract_json(raw: str) -> dict:
     """
-    Attempt to parse a JSON object from a raw model response.
-    Handles cases where the model wraps output in markdown fences.
-    Returns the parsed dict or raises ValueError on failure.
+    Parse the first balanced JSON object from a raw model response.
+
+    Fix #13: Uses a brace-depth counter instead of a greedy regex so nested
+    objects and multiple JSON blobs in one response are handled correctly.
+
+    Raises ValueError on failure.
     """
     # Remove markdown fences if present
     text = re.sub(r"```(?:json)?", "", raw).strip()
-    # Find the first { ... } block
-    match = re.search(r"\{.*\}", text, re.DOTALL)
-    if not match:
+
+    start = text.find("{")
+    if start == -1:
         raise ValueError("No JSON object found in model response.")
+
+    depth = 0
+    end = -1
+    for i, ch in enumerate(text[start:], start):
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                end = i
+                break
+
+    if end == -1:
+        raise ValueError("Unbalanced JSON braces in model response.")
+
     try:
-        return json.loads(match.group())
+        return json.loads(text[start:end + 1])
     except json.JSONDecodeError as exc:
         raise ValueError(f"Failed to parse JSON from model response: {exc}") from exc

@@ -1,0 +1,30 @@
+# I-3 FIX: Prevent secrets, large data dirs, and dev artefacts from
+# being included in the Docker image layer history.
+
+# Never bake real credentials into the image
+.env
+
+# Local vector DB — can be GBs; mounted as a volume at runtime
+chroma_data/
+
+# Python artefacts
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Tests — not needed in production image
+tests/
+
+# VCS
+.git/
+.gitignore
+
+# Docs
+*.md
+
+# OS artefacts
+.DS_Store
+Thumbs.db

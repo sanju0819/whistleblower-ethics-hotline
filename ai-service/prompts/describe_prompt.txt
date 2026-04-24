@@ -11,11 +11,11 @@ Your task is to produce a structured description of this report.
 You MUST respond with ONLY a valid JSON object. Do NOT include any explanation, preamble, markdown fences, or extra text outside the JSON.
 
 Return exactly this structure:
-{{
+{
   "category": "<one of: Fraud, Harassment, Safety, Corruption, Discrimination, Other>",
   "severity": "<one of: Critical, High, Medium, Low>",
   "summary": "<1-2 sentence neutral summary of the report>",
   "key_entities": ["<entity1>", "<entity2>"],
   "recommended_action": "<brief next step for the compliance team>",
   "generated_at": "{generated_at}"
-}}
+}
