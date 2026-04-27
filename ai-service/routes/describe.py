@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from flask import Blueprint, request, jsonify, g
 
 from services.groq_client import call_groq
+from services.cache import cache_get, cache_set, make_cache_key
 from routes.helpers import load_prompt, sanitise_input, extract_json
 
 logger = logging.getLogger(__name__)
@@ -41,14 +42,25 @@ def describe():
     if len(raw_text) > 5000:
         return jsonify({"error": "Field 'text' must not exceed 5000 characters."}), 400
 
-    # ── Sanitise input (Fix #10: skip if middleware already handled it) ────────
-    if not getattr(g, "sanitised", False):
+    # ── Sanitise input (Fix #10: use middleware-cleaned value if available) ────
+    if getattr(g, "sanitised", False):
+        clean_text = g.clean_fields.get("text", raw_text.strip())
+    else:
         try:
             clean_text = sanitise_input(raw_text)
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
-    else:
-        clean_text = raw_text.strip()
+
+    # ── Check cache ─────────────────────────────────────────────────────────────
+    cache_key = make_cache_key("describe", clean_text)
+    try:
+        cached = cache_get(cache_key)
+        if cached is not None:
+            logger.info("Cache HIT for /describe")
+            cached["generated_at"] = datetime.now(timezone.utc).isoformat()
+            return jsonify(cached), 200
+    except Exception as exc:
+        logger.warning("Cache read failed for /describe: %s", exc)
 
     # ── Build prompt ───────────────────────────────────────────────────────────
     generated_at = datetime.now(timezone.utc).isoformat()
@@ -85,5 +97,12 @@ def describe():
     # I-1 FIX: Guarantee consistent envelope on all routes regardless of LLM output.
     parsed.setdefault("is_fallback", False)
     parsed.setdefault("generated_at", generated_at)
+
+    # ── Cache successful (non-fallback) responses ──────────────────────────────
+    if not parsed.get("is_fallback", False):
+        try:
+            cache_set(cache_key, parsed)
+        except Exception as exc:
+            logger.warning("Cache write failed for /describe: %s", exc)
 
     return jsonify(parsed), 200

@@ -31,8 +31,9 @@ def sanitise_middleware():
     1. Reads X-Request-ID header (set by Java backend) or generates a new UUID
        and stores it in g.request_id for use in log messages and response headers.
     2. For POST endpoints that accept a 'text' or 'query' field, validate and
-       sanitise it.  Sets g.sanitised = True after a successful check so
-       individual routes can skip redundant sanitisation of the same field.
+       sanitise it.  Stores the cleaned value in g.clean_fields so routes can
+       read the sanitised text directly.  Sets g.sanitised = True after a
+       successful check so individual routes can skip redundant sanitisation.
 
     Returns a 400 response immediately if input is invalid.
     Returns None to let Flask continue processing normally.
@@ -54,12 +55,15 @@ def sanitise_middleware():
         return None  # Individual routes handle missing/invalid JSON
 
     # Check both 'text' (describe/recommend/report) and 'query' (/query)
+    g.clean_fields = {}
+
     for field in ("text", "query"):
         raw_value = body.get(field, "")
         if not raw_value:
             continue
         try:
-            sanitise_input(raw_value)
+            cleaned = sanitise_input(raw_value)
+            g.clean_fields[field] = cleaned
         except ValueError as exc:
             logger.warning(
                 "Sanitisation middleware blocked request to %s (field=%s, request_id=%s): %s",

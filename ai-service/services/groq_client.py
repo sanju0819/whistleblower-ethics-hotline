@@ -11,13 +11,16 @@ import time
 import logging
 import requests
 from typing import Optional
+from pathlib import Path
 
 from dotenv import load_dotenv
 
 # I-8 FIX: Call load_dotenv() here so _GROQ_API_KEY is populated correctly
 # regardless of whether groq_client is imported before or after create_app().
 # load_dotenv() is idempotent — calling it multiple times is safe.
-load_dotenv()
+# Use explicit path so it works regardless of CWD.
+_env_path = Path(__file__).resolve().parent.parent / ".env"
+load_dotenv(dotenv_path=_env_path)
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +80,10 @@ def call_groq(
 
     # Fix #11: Granular exception handling — auth errors are not retried.
     for attempt, wait in enumerate(RETRY_BACKOFF, start=1):
+        logger.info(
+            "Groq API call attempt %d/%d (model=%s, temp=%.1f)",
+            attempt, MAX_RETRIES, GROQ_MODEL, temperature,
+        )
         try:
             response = requests.post(
                 GROQ_API_URL, headers=headers, json=payload, timeout=30

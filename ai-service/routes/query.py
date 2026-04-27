@@ -66,14 +66,14 @@ def query():
         ), 400
 
     # ── 2. Sanitise input ──────────────────────────────────────────────────────
-    # Fix #10: Only sanitise if middleware has not already done so.
-    if not getattr(g, "sanitised", False):
+    # Fix #10: Use middleware-cleaned value if available.
+    if getattr(g, "sanitised", False):
+        clean_query = g.clean_fields.get("query", raw_query.strip())
+    else:
         try:
             clean_query = sanitise_input(raw_query)
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
-    else:
-        clean_query = raw_query.strip()
 
     generated_at = datetime.now(timezone.utc).isoformat()
 

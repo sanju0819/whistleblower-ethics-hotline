@@ -245,3 +245,67 @@ def test_generate_report_fallback_on_groq_error(client):
     data = resp.get_json()
     assert data.get("is_fallback") is True
     assert "title" in data
+
+
+# ── Cache integration tests (HI-6) ────────────────────────────────────────────
+
+def test_describe_returns_cached_response_on_hit(client):
+    """Cache HIT: Groq must NOT be called when a cached response exists."""
+    cached_data = {
+        "category": "Fraud", "severity": "High",
+        "summary": "Cached response.", "key_entities": [],
+        "recommended_action": "Review.", "generated_at": "2026-04-21T00:00:00+00:00",
+        "is_fallback": False,
+    }
+    with patch("routes.describe.cache_get", return_value=cached_data) as mock_get, \
+         patch("routes.describe.call_groq") as mock_groq:
+        resp = client.post("/describe", json={"text": "Test fraud report."})
+    assert resp.status_code == 200
+    mock_get.assert_called_once()
+    mock_groq.assert_not_called()
+    data = resp.get_json()
+    assert data["category"] == "Fraud"
+    assert "generated_at" in data
+
+
+def test_describe_cache_set_called_on_miss(client):
+    """Cache MISS: cache_set must be called after a successful Groq response."""
+    mock_groq_response = {
+        "category": "Safety", "severity": "High",
+        "summary": "Safety violation reported.", "key_entities": [],
+        "recommended_action": "Investigate.", "generated_at": "2026-04-21T00:00:00+00:00",
+        "is_fallback": False,
+    }
+    with patch("routes.describe.cache_get", return_value=None), \
+         patch("routes.describe.cache_set") as mock_set, \
+         patch("routes.describe.call_groq", return_value=json.dumps(mock_groq_response)):
+        resp = client.post("/describe", json={"text": "Safety lockout bypassed."})
+    assert resp.status_code == 200
+    mock_set.assert_called_once()
+
+
+def test_describe_cache_not_set_on_fallback(client):
+    """Fallback responses (is_fallback=True) must never be cached."""
+    with patch("routes.describe.cache_get", return_value=None), \
+         patch("routes.describe.cache_set") as mock_set, \
+         patch("routes.describe.call_groq", side_effect=RuntimeError("Groq down")):
+        resp = client.post("/describe", json={"text": "Report about harassment."})
+    assert resp.status_code == 200
+    assert resp.get_json().get("is_fallback") is True
+    mock_set.assert_not_called()
+
+
+def test_cache_unavailable_does_not_break_endpoint(client):
+    """If Redis is completely broken, the endpoint still returns a valid response."""
+    mock_response = {
+        "category": "Corruption", "severity": "Medium",
+        "summary": "Bribery suspected.", "key_entities": [],
+        "recommended_action": "Escalate.", "generated_at": "2026-04-21T00:00:00+00:00",
+        "is_fallback": False,
+    }
+    with patch("routes.describe.cache_get", side_effect=Exception("Redis exploded")), \
+         patch("routes.describe.cache_set", side_effect=Exception("Redis exploded")), \
+         patch("routes.describe.call_groq", return_value=json.dumps(mock_response)):
+        resp = client.post("/describe", json={"text": "Director accepted bribes."})
+    assert resp.status_code == 200
+    assert "category" in resp.get_json()

@@ -12,6 +12,7 @@ Thread safety: _get_collection() uses double-checked locking via a threading.RLo
 so the collection is initialised only once in concurrent requests.
 """
 
+import os
 import logging
 import hashlib
 import threading
@@ -26,14 +27,6 @@ logger = logging.getLogger(__name__)
 COLLECTION_NAME = "complaints"
 TOP_K = 3  # default number of results returned by similarity_search
 MIN_RELEVANCE_SCORE = 0.4  # Fix #14: filter out low-relevance results
-
-# ── ChromaDB embedding setup ───────────────────────────────────────────────────
-embedding_function = embedding_functions.DefaultEmbeddingFunction()
-client = chromadb.Client()
-collection = client.get_or_create_collection(
-    name=COLLECTION_NAME,
-    embedding_function=embedding_function,
-)
 
 # ── Domain knowledge seed documents ──────────────────────────────────────────
 _SEED_DOCUMENTS: List[Dict[str, str]] = [
@@ -151,9 +144,10 @@ _SEED_DOCUMENTS: List[Dict[str, str]] = [
 
 # ── Singleton state ───────────────────────────────────────────────────────────
 # C-1 FIX: Use RLock (reentrant) instead of Lock.
-# _get_collection() acquires _init_lock then calls _seed_documents(), which is safe
-# because it no longer depends on a separate model-loading lock.
 _init_lock = threading.RLock()
+_client = None
+_collection = None
+_initialised = False
 
 
 def _get_collection() -> chromadb.Collection:
@@ -161,32 +155,56 @@ def _get_collection() -> chromadb.Collection:
     Return the ChromaDB collection, creating client + collection if needed.
     Seeds domain documents on first creation. Thread-safe via double-checked locking.
     """
+    global _client, _collection, _initialised
+
+    if _initialised:
+        return _collection
+
     with _init_lock:
-        logger.info("Initialising ChromaDB collection: %s", COLLECTION_NAME)
+        if _initialised:
+            return _collection
+
+        # Read AFTER load_dotenv() has run in app.py
+        persist_dir = os.getenv("CHROMA_PERSIST_DIR")
+        if persist_dir:
+            os.makedirs(persist_dir, exist_ok=True)
+            _client = chromadb.PersistentClient(path=persist_dir)
+            logger.info("ChromaDB using persistent storage at %s", persist_dir)
+        else:
+            _client = chromadb.Client()
+            logger.info("ChromaDB using in-memory storage (no CHROMA_PERSIST_DIR set)")
+
+        ef = embedding_functions.DefaultEmbeddingFunction()
+        _collection = _client.get_or_create_collection(
+            name=COLLECTION_NAME,
+            embedding_function=ef,
+        )
         logger.info(
             "Collection '%s' ready. Documents stored: %d",
             COLLECTION_NAME,
-            collection.count(),
+            _collection.count(),
         )
 
         # Seed if empty — Fix #8: pass collection explicitly, no global dependency.
-        if collection.count() == 0:
+        if _collection.count() == 0:
             logger.info("Seeding %d domain knowledge documents …", len(_SEED_DOCUMENTS))
-            _seed_documents(collection)
-            logger.info("Seeding complete. Total documents: %d", collection.count())
+            _seed_documents(_collection)
+            logger.info("Seeding complete. Total documents: %d", _collection.count())
 
-    return collection
+        _initialised = True
+
+    return _collection
 
 
 # Fix #8: Accept collection as a parameter — no implicit global dependency.
-def _seed_documents(collection: chromadb.Collection) -> None:
+def _seed_documents(coll: chromadb.Collection) -> None:
     """Insert the built-in seed documents into the given collection."""
 
     ids = [doc["id"] for doc in _SEED_DOCUMENTS]
     texts = [doc["text"] for doc in _SEED_DOCUMENTS]
     metadatas = [{"source": doc["source"]} for doc in _SEED_DOCUMENTS]
 
-    collection.add(
+    coll.add(
         ids=ids,
         documents=texts,
         metadatas=metadatas,
@@ -218,7 +236,7 @@ def add_documents(documents: List[Dict[str, str]]) -> int:
     if not documents:
         return 0
 
-    collection = _get_collection()
+    coll = _get_collection()
 
     ids, texts, metadatas = [], [], []
     for doc in documents:
@@ -234,7 +252,7 @@ def add_documents(documents: List[Dict[str, str]]) -> int:
     if not ids:
         return 0
 
-    collection.add(
+    coll.add(
         ids=ids,
         documents=texts,
         metadatas=metadatas,
@@ -260,17 +278,17 @@ def similarity_search(query: str, top_k: int = TOP_K) -> List[Dict[str, Any]]:
     Returns an empty list if the collection is empty or an error occurs.
     """
     try:
-        collection = _get_collection()
-        if collection.count() == 0:
+        coll = _get_collection()
+        if coll.count() == 0:
             logger.warning("similarity_search called on empty collection.")
             return []
 
-        results = collection.query(
+        results = coll.query(
             query_texts=[query],
             # I-10 FIX: Fetch twice as many candidates before filtering so that
             # if fewer than top_k pass the relevance threshold we still surface
             # the best available results rather than returning an empty list.
-            n_results=min(top_k * 2, collection.count()),
+            n_results=min(top_k * 2, coll.count()),
             include=["documents", "metadatas", "distances"],
         )
 

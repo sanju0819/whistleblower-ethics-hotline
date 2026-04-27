@@ -6,12 +6,19 @@ Port: 5000
 import os
 import time
 import logging
+import threading
+from collections import deque
 from datetime import datetime, timezone
+from pathlib import Path
 
-from flask import Flask, jsonify
+from flask import Flask, jsonify, g, request
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from dotenv import load_dotenv
+
+# CR-2 FIX: Module-level lock protects the RESPONSE_TIMES deque from
+# concurrent append + iteration across Gunicorn threads.
+_times_lock = threading.Lock()
 
 
 def create_app() -> Flask:
@@ -22,7 +29,10 @@ def create_app() -> Flask:
     blueprint or service module is imported, without needing mid-file
     imports with # noqa: E402 suppression.
     """
-    load_dotenv()
+    # Always load .env from the same directory as app.py — works correctly
+    # regardless of which folder the user runs `python app.py` from.
+    _env_path = Path(__file__).resolve().parent / ".env"
+    load_dotenv(dotenv_path=_env_path)
 
     # ── Logging ────────────────────────────────────────────────────────────────
     logging.basicConfig(
@@ -32,6 +42,23 @@ def create_app() -> Flask:
     logger = logging.getLogger(__name__)
 
     application = Flask(__name__)
+
+    # ── Validate critical env vars at startup (fail fast) ─────────────────────
+    _groq_key = os.getenv("GROQ_API_KEY", "")
+    if not _groq_key or _groq_key == "your_groq_api_key_here":
+        logger.error(
+            "GROQ_API_KEY is not set or is still the placeholder value. "
+            "Copy .env.example to ai-service/.env and set a real key. "
+            "Get a free key at https://console.groq.com"
+        )
+        raise RuntimeError(
+            "GROQ_API_KEY is missing. Set it in ai-service/.env before starting."
+        )
+    else:
+        logger.info("GROQ_API_KEY loaded successfully (length=%d).", len(_groq_key))
+
+    # CR-1 FIX: Initialise RESPONSE_TIMES deque BEFORE any hooks that use it.
+    application.config["RESPONSE_TIMES"] = deque(maxlen=100)
 
     # ── Rate limiter: 30 requests / minute per IP ──────────────────────────────
     # Fix #4: Use Redis for shared state across Gunicorn workers.
@@ -59,6 +86,10 @@ def create_app() -> Flask:
     from routes.middleware import sanitise_middleware
     application.before_request(sanitise_middleware)
 
+    @application.before_request
+    def record_start_time():
+        g.start_time = time.time()
+
     # ── Register blueprints ────────────────────────────────────────────────────
     from routes.describe import describe_bp
     from routes.recommend import recommend_bp
@@ -77,6 +108,17 @@ def create_app() -> Flask:
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["Content-Security-Policy"] = "default-src 'none'"
         response.headers["Referrer-Policy"] = "no-referrer"
+        return response
+
+    @application.after_request
+    def record_response_time(response):
+        start = getattr(g, "start_time", None)
+        if start is not None:
+            elapsed = time.time() - start
+            with _times_lock:
+                times = application.config.get("RESPONSE_TIMES")
+                if times is not None:
+                    times.append(elapsed)
         return response
 
     # ── Fix #15: Capture start time BEFORE slow VectorStore init ──────────────
@@ -103,12 +145,16 @@ def create_app() -> Flask:
             doc_count = document_count()
         except Exception:
             doc_count = -1
+        with _times_lock:
+            times = list(application.config.get("RESPONSE_TIMES", []))
+        avg_response_ms = round(sum(times) / len(times) * 1000, 1) if times else 0.0
         return jsonify({
             "status": "ok",
             "model": "llama-3.3-70b-versatile",
             "embedding_model": "all-MiniLM-L6-v2",
             "vector_store_documents": doc_count,
             "uptime_seconds": uptime_seconds,
+            "avg_response_ms": avg_response_ms,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }), 200
 
