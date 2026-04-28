@@ -1,0 +1,4 @@
+# Dev / test dependencies — NOT installed in production Docker image.
+# Install: pip install -r requirements-dev.txt
+pytest==8.2.2
+flake8==7.1.0

@@ -3,3 +3,5 @@ __pycache__/
 *.pyc
 .env
 chroma_data/
+*.egg-info/
+.pytest_cache/

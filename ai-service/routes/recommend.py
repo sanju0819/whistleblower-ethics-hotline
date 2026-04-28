@@ -22,7 +22,7 @@ from flask import Blueprint, request, jsonify, g
 
 from services.groq_client import call_groq
 from services.cache import cache_get, cache_set, make_cache_key
-from routes.helpers import load_prompt, sanitise_input, extract_json
+from routes.helpers import load_prompt, sanitise_input, extract_json, make_fallback
 
 logger = logging.getLogger(__name__)
 
@@ -104,8 +104,8 @@ def recommend():
         cached = cache_get(cache_key)
         if cached is not None:
             logger.info("Cache HIT for /recommend")
-            cached["generated_at"] = datetime.now(timezone.utc).isoformat()
-            return jsonify(cached), 200
+            result = {**cached, "generated_at": datetime.now(timezone.utc).isoformat()}
+            return jsonify(result), 200
     except Exception as exc:
         logger.warning("Cache read failed for /recommend: %s", exc)
 
@@ -124,14 +124,14 @@ def recommend():
         raw_response = call_groq(prompt, temperature=0.3)
     except Exception as exc:
         logger.error("Groq call failed for /recommend: %s", exc)
-        return jsonify(FALLBACK_RESPONSE), 200
+        return jsonify(make_fallback(FALLBACK_RESPONSE, generated_at)), 200
 
     # ── Parse JSON ─────────────────────────────────────────────────────────────
     try:
         parsed = extract_json(raw_response)
     except ValueError as exc:
         logger.error("JSON parse failed for /recommend: %s | raw: %s", exc, raw_response[:300])
-        return jsonify(FALLBACK_RESPONSE), 200
+        return jsonify(make_fallback(FALLBACK_RESPONSE, generated_at)), 200
 
     # ── Validate structure ─────────────────────────────────────────────────────
     if not _validate_recommendations(parsed):
@@ -139,7 +139,7 @@ def recommend():
             "Groq /recommend response failed structure validation, using fallback. "
             "Parsed: %s", parsed
         )
-        return jsonify(FALLBACK_RESPONSE), 200
+        return jsonify(make_fallback(FALLBACK_RESPONSE, generated_at)), 200
 
     # I-1 FIX: Guarantee consistent envelope on all routes regardless of LLM output.
     parsed.setdefault("is_fallback", False)

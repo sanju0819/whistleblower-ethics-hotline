@@ -27,9 +27,12 @@ logger = logging.getLogger(__name__)
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 GROQ_MODEL = "llama-3.3-70b-versatile"
 MAX_RETRIES = 3
-RETRY_BACKOFF = [1, 2, 4]  # seconds
+RETRY_BACKOFF = (1, 2, 4)  # seconds — tuple for immutability
+REQUEST_TIMEOUT = 30  # seconds — named constant for HTTP timeout
 
 # Fix #12: Read and validate at module import time — fail fast on missing key.
+# NOTE: This is a module-level snapshot.  In containerised deployments, restart
+# the container to pick up a rotated key.
 _GROQ_API_KEY: str = os.getenv("GROQ_API_KEY", "")
 
 
@@ -54,8 +57,6 @@ def call_groq(
     Raises:
         RuntimeError if all retries fail or the API key is invalid/missing.
     """
-    # Fix #12: Validate key on every call (key may have been cleared at runtime),
-    # but the module-level read means startup already flagged a missing key.
     if not _GROQ_API_KEY:
         raise RuntimeError("GROQ_API_KEY environment variable is not set.")
 
@@ -76,27 +77,32 @@ def call_groq(
         "messages": messages,
     }
 
-    last_error: Exception | None = None
+    last_error: Optional[Exception] = None
 
-    # Fix #11: Granular exception handling — auth errors are not retried.
-    for attempt, wait in enumerate(RETRY_BACKOFF, start=1):
-        logger.info(
+    # HI-3 FIX: Use a while loop with an explicit attempt counter so that 429
+    # rate-limit responses do NOT consume one of the MAX_RETRIES slots.
+    # The old `for attempt, wait in enumerate(RETRY_BACKOFF)` always advanced
+    # the iterator even on `continue`, exhausting retries after 3 rate-limits.
+    attempt = 0
+    while attempt < MAX_RETRIES:
+        wait = RETRY_BACKOFF[attempt] if attempt < len(RETRY_BACKOFF) else RETRY_BACKOFF[-1]
+        logger.debug(
             "Groq API call attempt %d/%d (model=%s, temp=%.1f)",
-            attempt, MAX_RETRIES, GROQ_MODEL, temperature,
+            attempt + 1, MAX_RETRIES, GROQ_MODEL, temperature,
         )
         try:
             response = requests.post(
-                GROQ_API_URL, headers=headers, json=payload, timeout=30
+                GROQ_API_URL, headers=headers, json=payload, timeout=REQUEST_TIMEOUT
             )
             response.raise_for_status()
             data = response.json()
             content = data["choices"][0]["message"]["content"]
-            logger.info("Groq call succeeded on attempt %d", attempt)
+            logger.info("Groq call succeeded on attempt %d", attempt + 1)
             return content
 
-        except requests.exceptions.Timeout:
-            last_error = Exception(f"Request timed out on attempt {attempt}")
-            logger.warning("Groq attempt %d timed out, retrying …", attempt)
+        except requests.exceptions.Timeout as exc:
+            last_error = exc
+            logger.warning("Groq attempt %d timed out, retrying …", attempt + 1)
 
         except requests.exceptions.HTTPError as exc:
             status = exc.response.status_code if exc.response is not None else 0
@@ -107,26 +113,31 @@ def call_groq(
             # I-2 FIX: On 429 (rate limited), honour Retry-After and do NOT count
             # this attempt against MAX_RETRIES — retrying too early wastes quota.
             if status == 429:
-                retry_after = int(
-                    exc.response.headers.get("Retry-After", wait)
-                )
+                try:
+                    retry_after = int(
+                        exc.response.headers.get("Retry-After", wait)
+                    )
+                except (ValueError, TypeError):
+                    retry_after = wait
                 logger.warning(
                     "Groq 429 rate-limited on attempt %d — sleeping %ds (Retry-After)",
-                    attempt, retry_after,
+                    attempt + 1, retry_after,
                 )
                 time.sleep(retry_after)
-                continue  # retry without incrementing attempt count
+                # Do NOT increment attempt — 429 is not a real failure
+                continue
             last_error = exc
             logger.warning(
-                "Groq HTTP error %d on attempt %d/%d", status, attempt, MAX_RETRIES
+                "Groq HTTP error %d on attempt %d/%d", status, attempt + 1, MAX_RETRIES
             )
 
         except requests.exceptions.RequestException as exc:
             last_error = exc
             logger.warning(
-                "Groq network error on attempt %d/%d: %s", attempt, MAX_RETRIES, exc
+                "Groq network error on attempt %d/%d: %s", attempt + 1, MAX_RETRIES, exc
             )
 
+        attempt += 1
         if attempt < MAX_RETRIES:
             time.sleep(wait)
 

@@ -26,7 +26,8 @@ from flask import Blueprint, request, jsonify, g
 
 from services.groq_client import call_groq
 from services.vector_store import similarity_search
-from routes.helpers import load_prompt, sanitise_input, extract_json
+from services.cache import cache_get, cache_set, make_cache_key
+from routes.helpers import load_prompt, sanitise_input, extract_json, make_fallback
 
 logger = logging.getLogger(__name__)
 
@@ -77,7 +78,18 @@ def query():
 
     generated_at = datetime.now(timezone.utc).isoformat()
 
-    # ── 3. Retrieve relevant context from ChromaDB ────────────────────────────
+    # ── 3. Check cache (HI-8 FIX: /query now has caching like all other endpoints) ─
+    cache_key = make_cache_key("query", clean_query)
+    try:
+        cached = cache_get(cache_key)
+        if cached is not None:
+            logger.info("Cache HIT for /query")
+            result = {**cached, "generated_at": datetime.now(timezone.utc).isoformat()}
+            return jsonify(result), 200
+    except Exception as exc:
+        logger.warning("Cache read failed for /query: %s", exc)
+
+    # ── 4. Retrieve relevant context from ChromaDB ────────────────────────────
     # Fix #14: similarity_search already filters by MIN_RELEVANCE_SCORE.
     try:
         search_results = similarity_search(clean_query, top_k=3)
@@ -85,7 +97,7 @@ def query():
         logger.error("Vector search failed for /query: %s", exc)
         search_results = []
 
-    # ── 4. Build context block and source list ─────────────────────────────────
+    # ── 5. Build context block and source list ─────────────────────────────────
     if search_results:
         context_lines = []
         for idx, result in enumerate(search_results, start=1):
@@ -101,13 +113,13 @@ def query():
         context_block = "No relevant documents found in the knowledge base."
         sources = []
 
-    # ── 5. Format source list for prompt injection ─────────────────────────────
+    # ── 6. Format source list for prompt substitution ──────────────────────────
     if sources:
         source_list_str = ", ".join(f'"{s}"' for s in sources)
     else:
         source_list_str = ""
 
-    # ── 6. Build and send prompt to Groq ──────────────────────────────────────
+    # ── 7. Build and send prompt to Groq ──────────────────────────────────────
     # Fix #2: Use str.replace() for user-controlled fields to avoid KeyError when
     # the query contains curly braces (e.g. "What is {this}?").
     try:
@@ -121,28 +133,22 @@ def query():
         )
     except Exception as exc:
         logger.error("Failed to load query prompt: %s", exc)
-        fallback = dict(_FALLBACK_RESPONSE)
-        fallback["generated_at"] = generated_at
-        return jsonify(fallback), 200
+        return jsonify(make_fallback(_FALLBACK_RESPONSE, generated_at)), 200
 
     try:
         raw_response = call_groq(prompt, temperature=0.3, max_tokens=1024)
     except Exception as exc:
         logger.error("Groq call failed for /query: %s", exc)
-        fallback = dict(_FALLBACK_RESPONSE)
-        fallback["generated_at"] = generated_at
-        return jsonify(fallback), 200
+        return jsonify(make_fallback(_FALLBACK_RESPONSE, generated_at)), 200
 
-    # ── 7. Parse and enrich the response ──────────────────────────────────────
+    # ── 8. Parse and enrich the response ──────────────────────────────────────
     try:
         parsed = extract_json(raw_response)
     except ValueError as exc:
         logger.error(
             "JSON parse failed for /query: %s | raw: %s", exc, raw_response[:300]
         )
-        fallback = dict(_FALLBACK_RESPONSE)
-        fallback["generated_at"] = generated_at
-        return jsonify(fallback), 200
+        return jsonify(make_fallback(_FALLBACK_RESPONSE, generated_at)), 200
 
     # Fix #7: Always overwrite sources with ground-truth ChromaDB results.
     # LLM-generated sources may be hallucinated and must never appear in the response.
@@ -157,6 +163,13 @@ def query():
         parsed["confidence"] = "Medium" if search_results else "Low"
     else:
         parsed["confidence"] = raw_conf
+
+    # ── 9. Cache successful (non-fallback) responses ──────────────────────────
+    if not parsed.get("is_fallback", False):
+        try:
+            cache_set(cache_key, parsed)
+        except Exception as exc:
+            logger.warning("Cache write failed for /query: %s", exc)
 
     logger.info(
         "/query answered with confidence=%s, sources=%d",

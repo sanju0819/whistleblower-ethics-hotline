@@ -10,7 +10,7 @@ from flask import Blueprint, request, jsonify, g
 
 from services.groq_client import call_groq
 from services.cache import cache_get, cache_set, make_cache_key
-from routes.helpers import load_prompt, sanitise_input, extract_json
+from routes.helpers import load_prompt, sanitise_input, extract_json, make_fallback
 
 logger = logging.getLogger(__name__)
 
@@ -56,8 +56,8 @@ def generate_report():
         cached = cache_get(cache_key)
         if cached is not None:
             logger.info("Cache HIT for /generate-report")
-            cached["generated_at"] = datetime.now(timezone.utc).isoformat()
-            return jsonify(cached), 200
+            result = {**cached, "generated_at": datetime.now(timezone.utc).isoformat()}
+            return jsonify(result), 200
     except Exception as exc:
         logger.warning("Cache read failed for /generate-report: %s", exc)
 
@@ -80,9 +80,7 @@ def generate_report():
         raw_response = call_groq(prompt, temperature=0.4, max_tokens=1500)
     except Exception as exc:
         logger.error("Groq call failed for /generate-report: %s", exc)
-        fallback = dict(FALLBACK_RESPONSE)
-        fallback["generated_at"] = generated_at
-        return jsonify(fallback), 200
+        return jsonify(make_fallback(FALLBACK_RESPONSE, generated_at)), 200
 
     # ── Parse JSON ─────────────────────────────────────────────────────────────
     try:
@@ -91,9 +89,7 @@ def generate_report():
         logger.error(
             "JSON parse failed for /generate-report: %s | raw: %s", exc, raw_response[:300]
         )
-        fallback = dict(FALLBACK_RESPONSE)
-        fallback["generated_at"] = generated_at
-        return jsonify(fallback), 200
+        return jsonify(make_fallback(FALLBACK_RESPONSE, generated_at)), 200
 
     # I-1 FIX: Guarantee consistent envelope on all routes regardless of LLM output.
     parsed.setdefault("is_fallback", False)

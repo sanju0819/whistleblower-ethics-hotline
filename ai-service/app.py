@@ -20,6 +20,9 @@ from dotenv import load_dotenv
 # concurrent append + iteration across Gunicorn threads.
 _times_lock = threading.Lock()
 
+# Named constant for response time window size
+_RESPONSE_WINDOW = 100
+
 
 def create_app() -> Flask:
     """
@@ -55,10 +58,12 @@ def create_app() -> Flask:
             "GROQ_API_KEY is missing. Set it in ai-service/.env before starting."
         )
     else:
-        logger.info("GROQ_API_KEY loaded successfully (length=%d).", len(_groq_key))
+        # HI-2 FIX: Log boolean confirmation, not key length — length is
+        # distinctive metadata that narrows the keyspace.
+        logger.info("GROQ_API_KEY loaded successfully.")
 
     # CR-1 FIX: Initialise RESPONSE_TIMES deque BEFORE any hooks that use it.
-    application.config["RESPONSE_TIMES"] = deque(maxlen=100)
+    application.config["RESPONSE_TIMES"] = deque(maxlen=_RESPONSE_WINDOW)
 
     # ── Rate limiter: 30 requests / minute per IP ──────────────────────────────
     # Fix #4: Use Redis for shared state across Gunicorn workers.
@@ -77,10 +82,35 @@ def create_app() -> Flask:
     )
     application.config["LIMITER"] = limiter
 
+    # ── CORS protection (Day 7) ────────────────────────────────────────────────
+    # Only allow requests from the Java backend (port 8080) and localhost.
+    # Deny all browser-originated cross-origin requests from unknown origins.
+    try:
+        from flask_cors import CORS
+
+        allowed_origins = os.getenv(
+            "ALLOWED_ORIGINS",
+            "http://localhost:8080,http://127.0.0.1:8080"
+        )
+        CORS(
+            application,
+            origins=allowed_origins.split(","),
+            methods=["GET", "POST"],
+            allow_headers=["Content-Type", "X-Request-ID"],
+            max_age=600,
+        )
+        logger.info("CORS configured — allowed origins: %s", allowed_origins)
+    except ImportError:
+        logger.warning(
+            "flask-cors is not installed — CORS headers will NOT be set. "
+            "Install Flask-Cors to enable CORS protection."
+        )
+
     # I-7 FIX: Cap incoming request body size before route handlers run.
     # Field-level 5000-char checks fire AFTER Flask reads the full body;
     # this rejects oversized payloads early (16 KB is ample for any valid request).
-    application.config["MAX_CONTENT_LENGTH"] = 16 * 1024  # 16 KB
+    _MAX_CONTENT_BYTES = 16 * 1024  # 16 KB
+    application.config["MAX_CONTENT_LENGTH"] = _MAX_CONTENT_BYTES
 
     # ── Register middleware ────────────────────────────────────────────────────
     from routes.middleware import sanitise_middleware
@@ -106,8 +136,21 @@ def create_app() -> Flask:
     def security_headers(response):
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-Frame-Options"] = "DENY"
-        response.headers["Content-Security-Policy"] = "default-src 'none'"
+        # X-XSS-Protection is deprecated in modern browsers (Chrome removed
+        # XSS Auditor in 2019) but retained for legacy IE compatibility.
+        response.headers["X-XSS-Protection"] = "1; mode=block"
+        response.headers["Content-Security-Policy"] = "default-src 'none'; frame-ancestors 'none'"
         response.headers["Referrer-Policy"] = "no-referrer"
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+        # Remove server fingerprint header
+        response.headers.pop("Server", None)
+        # HI-1 FIX: Only set X-Request-ID if the middleware generated one.
+        # An empty string is worse than absent — some proxies treat "" as valid.
+        request_id = getattr(g, "request_id", None)
+        if request_id:
+            response.headers["X-Request-ID"] = request_id
         return response
 
     @application.after_request
@@ -139,7 +182,11 @@ def create_app() -> Flask:
     # ── Health endpoint ────────────────────────────────────────────────────────
     @application.route("/health", methods=["GET"])
     def health():
-        from services.vector_store import document_count
+        # ME-2 FIX: Import constants from their source modules so /health
+        # never drifts out of sync with the actual model in use.
+        from services.groq_client import GROQ_MODEL
+        from services.vector_store import EMBEDDING_MODEL_NAME, document_count
+
         uptime_seconds = int(time.time() - application.config["START_TIME"])
         try:
             doc_count = document_count()
@@ -150,13 +197,19 @@ def create_app() -> Flask:
         avg_response_ms = round(sum(times) / len(times) * 1000, 1) if times else 0.0
         return jsonify({
             "status": "ok",
-            "model": "llama-3.3-70b-versatile",
-            "embedding_model": "all-MiniLM-L6-v2",
+            "model": GROQ_MODEL,
+            "embedding_model": EMBEDDING_MODEL_NAME,
             "vector_store_documents": doc_count,
             "uptime_seconds": uptime_seconds,
             "avg_response_ms": avg_response_ms,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }), 200
+
+    # ── Ping endpoint (Day 7 — OWASP ZAP liveness probe) ─────────────────────
+    @application.route("/ping", methods=["GET"])
+    def ping():
+        """Lightweight liveness probe — used by ZAP and load balancers."""
+        return jsonify({"pong": True}), 200
 
     # ── Global error handlers ──────────────────────────────────────────────────
     @application.errorhandler(404)
@@ -166,6 +219,13 @@ def create_app() -> Flask:
     @application.errorhandler(405)
     def method_not_allowed(_err):
         return jsonify({"error": "Method not allowed."}), 405
+
+    # HI-1 FIX: Flask's MAX_CONTENT_LENGTH raises RequestEntityTooLarge which
+    # returns an HTML page by default.  Return JSON so the Java backend can
+    # parse it correctly.
+    @application.errorhandler(413)
+    def payload_too_large(_err):
+        return jsonify({"error": "Request payload too large."}), 413
 
     @application.errorhandler(429)
     def rate_limit_exceeded(_err):

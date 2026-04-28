@@ -6,3 +6,4 @@ Limits==3.13.0
 chromadb==0.5.23
 gunicorn==22.0.0
 redis==5.0.8
+Flask-Cors==4.0.1

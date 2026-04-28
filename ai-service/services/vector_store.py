@@ -28,6 +28,10 @@ COLLECTION_NAME = "complaints"
 TOP_K = 3  # default number of results returned by similarity_search
 MIN_RELEVANCE_SCORE = 0.4  # Fix #14: filter out low-relevance results
 
+# ME-5 FIX: Export the model name so /health can import it instead of
+# hardcoding a magic string that may drift out of sync.
+EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2"
+
 # ── Domain knowledge seed documents ──────────────────────────────────────────
 _SEED_DOCUMENTS: List[Dict[str, str]] = [
     {
@@ -252,12 +256,14 @@ def add_documents(documents: List[Dict[str, str]]) -> int:
     if not ids:
         return 0
 
-    coll.add(
+    # ME-6 FIX: Use upsert() instead of add() so re-adding a document with
+    # the same ID updates it instead of crashing with a duplicate ID error.
+    coll.upsert(
         ids=ids,
         documents=texts,
         metadatas=metadatas,
     )
-    logger.info("Added %d document(s) to ChromaDB.", len(ids))
+    logger.info("Upserted %d document(s) into ChromaDB.", len(ids))
     return len(ids)
 
 
@@ -298,8 +304,9 @@ def similarity_search(query: str, top_k: int = TOP_K) -> List[Dict[str, Any]]:
         distances = results.get("distances", [[]])[0]
 
         for doc_text, meta, distance in zip(docs, metas, distances):
-            # ChromaDB cosine distance: 0 = identical, 2 = opposite
-            # Convert to similarity score in [0, 1]
+            # ChromaDB cosine distance: 0 = identical, 2 = opposite.
+            # This formula is correct ONLY for the cosine distance space
+            # (the default for collections created without specifying a metric).
             similarity = round(1.0 - (distance / 2.0), 4)
             if similarity >= MIN_RELEVANCE_SCORE:  # Fix #14: threshold filter
                 output.append({
@@ -323,9 +330,10 @@ def similarity_search(query: str, top_k: int = TOP_K) -> List[Dict[str, Any]]:
 
 
 def document_count() -> int:
-    """Return the total number of documents in the collection."""
-    try:
-        return _get_collection().count()
-    except Exception as exc:
-        logger.error("document_count failed: %s", exc)
-        return 0
+    """
+    Return the total number of documents in the collection.
+
+    ME-6 FIX: Let exceptions propagate so callers (e.g. /health) can
+    distinguish "0 documents" from "ChromaDB is down" and report -1.
+    """
+    return _get_collection().count()
