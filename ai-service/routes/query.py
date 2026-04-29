@@ -45,6 +45,10 @@ _FALLBACK_RESPONSE = {
 # Maximum characters accepted in a single query
 _MAX_QUERY_LENGTH = 2000
 
+# Maximum characters per context chunk injected into the prompt.
+# Guards against oversized seed documents inflating prompt size.
+_MAX_CONTEXT_CHUNK_CHARS = 1000
+
 
 @query_bp.route("/query", methods=["POST"])
 def query():
@@ -54,7 +58,7 @@ def query():
     """
     # ── 1. Validate request body ───────────────────────────────────────────────
     body = request.get_json(silent=True)
-    if not body:
+    if body is None:
         return jsonify({"error": "Request body must be valid JSON."}), 400
 
     raw_query = body.get("query", "")
@@ -78,7 +82,7 @@ def query():
 
     generated_at = datetime.now(timezone.utc).isoformat()
 
-    # ── 3. Check cache (HI-8 FIX: /query now has caching like all other endpoints) ─
+    # ── 3. Check cache ─────────────────────────────────────────────────────────
     cache_key = make_cache_key("query", clean_query)
     try:
         cached = cache_get(cache_key)
@@ -101,23 +105,21 @@ def query():
     if search_results:
         context_lines = []
         for idx, result in enumerate(search_results, start=1):
-            source = result.get("source", "Unknown Source")
-            text = result.get("text", "")
+            source = str(result.get("source", "Unknown Source"))
+            # Truncate each chunk to avoid prompt inflation from large seed docs.
+            text = str(result.get("text", ""))[:_MAX_CONTEXT_CHUNK_CHARS]
             score = result.get("score", 0.0)
             context_lines.append(
                 f"[{idx}] Source: {source} (relevance: {score:.2f})\n{text}"
             )
         context_block = "\n\n".join(context_lines)
-        sources = [r.get("source", "Unknown Source") for r in search_results]
+        sources = [str(r.get("source", "Unknown Source")) for r in search_results]
     else:
         context_block = "No relevant documents found in the knowledge base."
         sources = []
 
     # ── 6. Format source list for prompt substitution ──────────────────────────
-    if sources:
-        source_list_str = ", ".join(f'"{s}"' for s in sources)
-    else:
-        source_list_str = ""
+    source_list_str = ", ".join(f'"{s}"' for s in sources) if sources else ""
 
     # ── 7. Build and send prompt to Groq ──────────────────────────────────────
     # Fix #2: Use str.replace() for user-controlled fields to avoid KeyError when
@@ -145,8 +147,10 @@ def query():
     try:
         parsed = extract_json(raw_response)
     except ValueError as exc:
+        # Log only error and response length — not raw content (may contain PII).
         logger.error(
-            "JSON parse failed for /query: %s | raw: %s", exc, raw_response[:300]
+            "JSON parse failed for /query: %s | raw response length: %d chars",
+            exc, len(raw_response),
         )
         return jsonify(make_fallback(_FALLBACK_RESPONSE, generated_at)), 200
 

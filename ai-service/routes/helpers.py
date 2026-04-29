@@ -25,11 +25,21 @@ def load_prompt(filename: str) -> str:
     """
     Read a prompt template from the prompts/ directory.
     Results are cached in memory after the first read — prompts never change at runtime.
+    Raises RuntimeError (not FileNotFoundError) so callers receive a clean message
+    without exposing internal filesystem paths.
     """
     if filename not in _prompt_cache:
         path = os.path.join(PROMPTS_DIR, filename)
-        with open(path, "r", encoding="utf-8") as fh:
-            _prompt_cache[filename] = fh.read()
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                _prompt_cache[filename] = fh.read()
+        except FileNotFoundError:
+            raise RuntimeError(
+                f"Prompt template '{filename}' not found. "
+                "Ensure the prompts/ directory is present and contains all required files."
+            )
+        except OSError as exc:
+            raise RuntimeError(f"Failed to read prompt template '{filename}': {exc}") from exc
     return _prompt_cache[filename]
 
 

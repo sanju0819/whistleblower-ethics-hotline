@@ -31,9 +31,10 @@ RETRY_BACKOFF = (1, 2, 4)  # seconds — tuple for immutability
 REQUEST_TIMEOUT = 30  # seconds — named constant for HTTP timeout
 
 # Fix #12: Read and validate at module import time — fail fast on missing key.
+# Strip whitespace/newlines that .env files occasionally append.
 # NOTE: This is a module-level snapshot.  In containerised deployments, restart
 # the container to pick up a rotated key.
-_GROQ_API_KEY: str = os.getenv("GROQ_API_KEY", "")
+_GROQ_API_KEY: str = os.getenv("GROQ_API_KEY", "").strip()
 
 
 def call_groq(
@@ -85,7 +86,8 @@ def call_groq(
     # the iterator even on `continue`, exhausting retries after 3 rate-limits.
     attempt = 0
     while attempt < MAX_RETRIES:
-        wait = RETRY_BACKOFF[attempt] if attempt < len(RETRY_BACKOFF) else RETRY_BACKOFF[-1]
+        # Clamp index so it never exceeds the backoff tuple length.
+        wait = RETRY_BACKOFF[min(attempt, len(RETRY_BACKOFF) - 1)]
         logger.debug(
             "Groq API call attempt %d/%d (model=%s, temp=%.1f)",
             attempt + 1, MAX_RETRIES, GROQ_MODEL, temperature,
@@ -97,7 +99,7 @@ def call_groq(
             response.raise_for_status()
             data = response.json()
             content = data["choices"][0]["message"]["content"]
-            logger.info("Groq call succeeded on attempt %d", attempt + 1)
+            logger.debug("Groq call succeeded on attempt %d", attempt + 1)
             return content
 
         except requests.exceptions.Timeout as exc:

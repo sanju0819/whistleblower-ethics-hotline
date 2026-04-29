@@ -47,20 +47,23 @@ def create_app() -> Flask:
     application = Flask(__name__)
 
     # ── Validate critical env vars at startup (fail fast) ─────────────────────
-    _groq_key = os.getenv("GROQ_API_KEY", "")
-    if not _groq_key or _groq_key == "your_groq_api_key_here":
-        logger.error(
-            "GROQ_API_KEY is not set or is still the placeholder value. "
-            "Copy .env.example to ai-service/.env and set a real key. "
-            "Get a free key at https://console.groq.com"
-        )
-        raise RuntimeError(
-            "GROQ_API_KEY is missing. Set it in ai-service/.env before starting."
-        )
-    else:
-        # HI-2 FIX: Log boolean confirmation, not key length — length is
-        # distinctive metadata that narrows the keyspace.
-        logger.info("GROQ_API_KEY loaded successfully.")
+    # SKIP_GROQ_VALIDATION=true lets CI/test environments bypass this check
+    # without removing the production guard.
+    _skip_validation = os.getenv("SKIP_GROQ_VALIDATION", "false").lower() == "true"
+    _groq_key = os.getenv("GROQ_API_KEY", "").strip()
+    if not _skip_validation:
+        if not _groq_key or _groq_key == "your_groq_api_key_here":
+            logger.error(
+                "GROQ_API_KEY is not set or is still the placeholder value. "
+                "Copy .env.example to ai-service/.env and set a real key. "
+                "Get a free key at https://console.groq.com"
+            )
+            raise RuntimeError(
+                "GROQ_API_KEY is missing. Set it in ai-service/.env before starting."
+            )
+    # HI-2 FIX: Log boolean confirmation, not key length — length is
+    # distinctive metadata that narrows the keyspace.
+    logger.info("GROQ_API_KEY loaded successfully.")
 
     # CR-1 FIX: Initialise RESPONSE_TIMES deque BEFORE any hooks that use it.
     application.config["RESPONSE_TIMES"] = deque(maxlen=_RESPONSE_WINDOW)
@@ -82,7 +85,7 @@ def create_app() -> Flask:
     )
     application.config["LIMITER"] = limiter
 
-    # ── CORS protection (Day 7) ────────────────────────────────────────────────
+    # ── CORS protection ────────────────────────────────────────────────────────
     # Only allow requests from the Java backend (port 8080) and localhost.
     # Deny all browser-originated cross-origin requests from unknown origins.
     try:
@@ -131,7 +134,7 @@ def create_app() -> Flask:
     application.register_blueprint(report_bp)
     application.register_blueprint(query_bp)
 
-    # ── Security response headers (I-6) ──────────────────────────────────────
+    # ── Security response headers ──────────────────────────────────────────────
     @application.after_request
     def security_headers(response):
         response.headers["X-Content-Type-Options"] = "nosniff"
@@ -193,7 +196,7 @@ def create_app() -> Flask:
         except Exception:
             doc_count = -1
         with _times_lock:
-            times = list(application.config.get("RESPONSE_TIMES", []))
+            times = list(application.config["RESPONSE_TIMES"])
         avg_response_ms = round(sum(times) / len(times) * 1000, 1) if times else 0.0
         return jsonify({
             "status": "ok",
@@ -205,7 +208,7 @@ def create_app() -> Flask:
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }), 200
 
-    # ── Ping endpoint (Day 7 — OWASP ZAP liveness probe) ─────────────────────
+    # ── Ping endpoint (liveness probe) ────────────────────────────────────────
     @application.route("/ping", methods=["GET"])
     def ping():
         """Lightweight liveness probe — used by ZAP and load balancers."""
@@ -247,5 +250,9 @@ if __name__ == "__main__":
     _logger = logging.getLogger(__name__)
     port = int(os.getenv("AI_PORT", 5000))
     debug = os.getenv("FLASK_DEBUG", "false").lower() == "true"
+    _logger.warning(
+        "Running with app.run() — for LOCAL DEVELOPMENT only. "
+        "Use Gunicorn for production."
+    )
     _logger.info("Starting ai-service on port %d (debug=%s)", port, debug)
     app.run(host="0.0.0.0", port=port, debug=debug)

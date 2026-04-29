@@ -12,7 +12,7 @@ can include it.  This enables distributed tracing across the Java <-> Flask
 service boundary.
 
 NOTE: If a new endpoint adds a user-supplied field that is injected into a
-prompt, add that field name to the loop on line 68 below.
+prompt, add that field name to the loop on line ~72 below.
 """
 
 import uuid
@@ -52,11 +52,18 @@ def sanitise_middleware():
         )
         return jsonify({"error": "Content-Type must be application/json."}), 415
 
-    # 3. Parse body
-    # ME-7 FIX: Use `is None` — an empty JSON object {} is valid and should
-    # pass through to the route handler for its own field validation.
+    # 3. Parse body — return 400 immediately for malformed JSON so the
+    # middleware is the single enforcement point, not each individual route.
     body = request.get_json(silent=True)
     if body is None:
+        # Distinguish between an empty body and a malformed JSON body.
+        # An empty Content-Length body is fine (routes will validate fields).
+        if request.content_length and request.content_length > 0:
+            logger.warning(
+                "Rejected malformed JSON body on %s (request_id=%s)",
+                request.path, g.request_id,
+            )
+            return jsonify({"error": "Request body must be valid JSON."}), 400
         return None
 
     # 4. JSON bomb protection — reject if too many keys
@@ -70,11 +77,12 @@ def sanitise_middleware():
     # 5. Sanitise text/query fields
     g.clean_fields = {}
     for field in ("text", "query"):
-        raw_value = body.get(field, "")
-        if not raw_value:
+        raw_value = body.get(field)
+        # Use `is None` — skips absent fields but allows "0" or other falsy strings.
+        if raw_value is None:
             continue
         try:
-            cleaned = sanitise_input(raw_value)
+            cleaned = sanitise_input(str(raw_value))
             g.clean_fields[field] = cleaned
         except ValueError as exc:
             logger.warning(

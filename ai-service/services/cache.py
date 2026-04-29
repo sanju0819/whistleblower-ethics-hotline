@@ -50,7 +50,7 @@ def _get_redis():
     if time.monotonic() < _next_retry_time:
         return None
 
-    redis_url = os.getenv("REDIS_URL")
+    redis_url = os.getenv("REDIS_URL", "").strip()
     if not redis_url:
         return None
 

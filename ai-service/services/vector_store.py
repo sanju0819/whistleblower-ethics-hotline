@@ -10,6 +10,9 @@ Responsibilities:
 
 Thread safety: _get_collection() uses double-checked locking via a threading.RLock
 so the collection is initialised only once in concurrent requests.
+
+NOTE: The collection is always created with hnsw:space=cosine so the
+distance-to-similarity formula (1 - distance/2) is always correct.
 """
 
 import os
@@ -175,13 +178,16 @@ def _get_collection() -> chromadb.Collection:
             _client = chromadb.PersistentClient(path=persist_dir)
             logger.info("ChromaDB using persistent storage at %s", persist_dir)
         else:
-            _client = chromadb.Client()
+            # chromadb.Client() was removed in ChromaDB ≥ 0.4; use EphemeralClient().
+            _client = chromadb.EphemeralClient()
             logger.info("ChromaDB using in-memory storage (no CHROMA_PERSIST_DIR set)")
 
         ef = embedding_functions.DefaultEmbeddingFunction()
+        # Pin the distance metric to cosine so the similarity formula is always correct.
         _collection = _client.get_or_create_collection(
             name=COLLECTION_NAME,
             embedding_function=ef,
+            metadata={"hnsw:space": "cosine"},
         )
         logger.info(
             "Collection '%s' ready. Documents stored: %d",
@@ -305,8 +311,8 @@ def similarity_search(query: str, top_k: int = TOP_K) -> List[Dict[str, Any]]:
 
         for doc_text, meta, distance in zip(docs, metas, distances):
             # ChromaDB cosine distance: 0 = identical, 2 = opposite.
-            # This formula is correct ONLY for the cosine distance space
-            # (the default for collections created without specifying a metric).
+            # This formula is correct because the collection is created with
+            # hnsw:space=cosine (pinned in _get_collection).
             similarity = round(1.0 - (distance / 2.0), 4)
             if similarity >= MIN_RELEVANCE_SCORE:  # Fix #14: threshold filter
                 output.append({
@@ -317,11 +323,8 @@ def similarity_search(query: str, top_k: int = TOP_K) -> List[Dict[str, Any]]:
                 if len(output) == top_k:  # I-10: cap final results at top_k
                     break
 
-        logger.info(
-            "similarity_search returned %d results for query (first 60 chars): '%s…'",
-            len(output),
-            query[:60],
-        )
+        # Log only result count — do NOT log query text (potential PII).
+        logger.info("similarity_search returned %d result(s).", len(output))
         return output
 
     except Exception as exc:

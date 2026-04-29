@@ -32,7 +32,7 @@ FALLBACK_RESPONSE = {
 def describe():
     # ── Validate request body ──────────────────────────────────────────────────
     body = request.get_json(silent=True)
-    if not body:
+    if body is None:
         return jsonify({"error": "Request body must be valid JSON."}), 400
 
     raw_text = body.get("text", "")
@@ -88,7 +88,11 @@ def describe():
     try:
         parsed = extract_json(raw_response)
     except ValueError as exc:
-        logger.error("JSON parse failed for /describe: %s | raw: %s", exc, raw_response[:300])
+        # Log only error and response length — not raw content (may contain PII).
+        logger.error(
+            "JSON parse failed for /describe: %s | raw response length: %d chars",
+            exc, len(raw_response),
+        )
         return jsonify(make_fallback(FALLBACK_RESPONSE, generated_at)), 200
 
     # I-1 FIX: Guarantee consistent envelope on all routes regardless of LLM output.

@@ -56,10 +56,11 @@ FALLBACK_RESPONSE = {
 def _validate_recommendations(data: dict) -> bool:
     """
     Return True if the parsed dict contains a valid 'recommendations' list
-    with at least one item, each having the required fields.
+    with at least 3 items, each having the required fields.
+    The Java backend contract requires exactly 3 recommendations.
     """
     recs = data.get("recommendations")
-    if not isinstance(recs, list) or len(recs) == 0:
+    if not isinstance(recs, list) or len(recs) < 3:
         return False
     for rec in recs:
         if not isinstance(rec, dict):
@@ -79,7 +80,7 @@ def _validate_recommendations(data: dict) -> bool:
 def recommend():
     # ── Validate request body ──────────────────────────────────────────────────
     body = request.get_json(silent=True)
-    if not body:
+    if body is None:
         return jsonify({"error": "Request body must be valid JSON."}), 400
 
     raw_text = body.get("text", "")
@@ -130,14 +131,20 @@ def recommend():
     try:
         parsed = extract_json(raw_response)
     except ValueError as exc:
-        logger.error("JSON parse failed for /recommend: %s | raw: %s", exc, raw_response[:300])
+        # Log only error and response length — not raw content (may contain PII).
+        logger.error(
+            "JSON parse failed for /recommend: %s | raw response length: %d chars",
+            exc, len(raw_response),
+        )
         return jsonify(make_fallback(FALLBACK_RESPONSE, generated_at)), 200
 
     # ── Validate structure ─────────────────────────────────────────────────────
     if not _validate_recommendations(parsed):
+        recs = parsed.get("recommendations")
         logger.warning(
-            "Groq /recommend response failed structure validation, using fallback. "
-            "Parsed: %s", parsed
+            "Groq /recommend response failed structure validation — "
+            "recommendations count: %d, using fallback.",
+            len(recs) if isinstance(recs, list) else -1,
         )
         return jsonify(make_fallback(FALLBACK_RESPONSE, generated_at)), 200
 

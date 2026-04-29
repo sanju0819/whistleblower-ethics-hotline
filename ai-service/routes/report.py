@@ -26,12 +26,23 @@ FALLBACK_RESPONSE = {
     "is_fallback": True,
 }
 
+# Required top-level fields the Java backend contract expects in every report.
+_REQUIRED_REPORT_FIELDS = {"title", "summary", "overview"}
+
+
+def _validate_report(data: dict) -> bool:
+    """Return True only if all required report fields are present and non-empty."""
+    for field in _REQUIRED_REPORT_FIELDS:
+        if not data.get(field):
+            return False
+    return True
+
 
 @report_bp.route("/generate-report", methods=["POST"])
 def generate_report():
     # ── Validate request body ──────────────────────────────────────────────────
     body = request.get_json(silent=True)
-    if not body:
+    if body is None:
         return jsonify({"error": "Request body must be valid JSON."}), 400
 
     raw_text = body.get("text", "")
@@ -86,8 +97,18 @@ def generate_report():
     try:
         parsed = extract_json(raw_response)
     except ValueError as exc:
+        # Log only error and response length — not raw content (may contain PII).
         logger.error(
-            "JSON parse failed for /generate-report: %s | raw: %s", exc, raw_response[:300]
+            "JSON parse failed for /generate-report: %s | raw response length: %d chars",
+            exc, len(raw_response),
+        )
+        return jsonify(make_fallback(FALLBACK_RESPONSE, generated_at)), 200
+
+    # ── Validate required fields ───────────────────────────────────────────────
+    if not _validate_report(parsed):
+        logger.warning(
+            "Groq /generate-report response missing required fields %s — using fallback.",
+            _REQUIRED_REPORT_FIELDS - set(parsed.keys()),
         )
         return jsonify(make_fallback(FALLBACK_RESPONSE, generated_at)), 200
 

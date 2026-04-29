@@ -477,3 +477,239 @@ def test_double_encoded_entities_stripped(client):
     # Should either be cleaned and pass (200) or be caught by injection regex (400)
     # but should NOT crash or return 500
     assert resp.status_code in (200, 400)
+
+
+# ── Day 8 — 8 NEW tests ───────────────────────────────────────────────────────
+
+# TEST 1 — /describe validates category field in Groq response
+def test_describe_normalises_unknown_category(client):
+    """
+    Groq returns an unexpected category — endpoint must return 200
+    and pass the value through without crashing.
+    """
+    mock_response = {
+        "category": "Nepotism",
+        "severity": "Medium",
+        "summary": "Nepotism case reported.",
+        "key_entities": ["Director"],
+        "recommended_action": "Investigate hiring decisions.",
+        "generated_at": "2026-04-23T09:00:00+00:00",
+        "is_fallback": False,
+    }
+    with patch("routes.describe.cache_get", return_value=None), \
+         patch("routes.describe.cache_set"), \
+         patch("routes.describe.call_groq",
+               return_value=json.dumps(mock_response)):
+        resp = client.post(
+            "/describe",
+            json={"text": "Manager hired his nephew without posting the role."}
+        )
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["category"] == "Nepotism"
+    assert data["is_fallback"] is False
+    assert "generated_at" in data
+
+
+# TEST 2 — /recommend validates all three priority values
+def test_recommend_all_valid_priorities(client):
+    """
+    Each recommendation must carry exactly High, Medium, or Low priority.
+    Values must be preserved as returned by Groq without modification.
+    """
+    mock_response = {
+        "recommendations": [
+            {"action_type": "Escalation",    "description": "Escalate to board.",           "priority": "High"},
+            {"action_type": "HR Review",     "description": "Conduct HR review.",            "priority": "Medium"},
+            {"action_type": "Policy Update", "description": "Update whistleblower policy.",  "priority": "Low"},
+        ],
+        "is_fallback": False,
+    }
+    with patch("routes.recommend.cache_get", return_value=None), \
+         patch("routes.recommend.cache_set"), \
+         patch("routes.recommend.call_groq",
+               return_value=json.dumps(mock_response)):
+        resp = client.post(
+            "/recommend",
+            json={"text": "Witnessed bribery during procurement process."}
+        )
+    assert resp.status_code == 200
+    data = resp.get_json()
+    recs = data["recommendations"]
+    assert recs[0]["priority"] == "High"
+    assert recs[1]["priority"] == "Medium"
+    assert recs[2]["priority"] == "Low"
+    assert data["is_fallback"] is False
+
+
+# TEST 3 — /generate-report validates all required fields present
+def test_generate_report_all_fields_present(client):
+    """
+    /generate-report response must contain all 7 required fields.
+    Missing any field is a contract violation with the Java backend.
+    """
+    mock_response = {
+        "title": "Compliance Report — Safety Violations",
+        "summary": "Multiple safety violations reported on factory floor.",
+        "overview": "Workers report blocked fire exits and bypassed lockout procedures over 3 months.",
+        "key_items": [
+            "Fire exits blocked on floor 3",
+            "Lockout procedures bypassed on machinery",
+            "No incident reports filed",
+        ],
+        "recommendations": [
+            "Immediate safety audit",
+            "Retrain maintenance staff",
+            "Review incident reporting process",
+        ],
+        "generated_at": "2026-04-23T09:00:00+00:00",
+        "is_fallback": False,
+    }
+    with patch("routes.report.cache_get", return_value=None), \
+         patch("routes.report.cache_set"), \
+         patch("routes.report.call_groq",
+               return_value=json.dumps(mock_response)):
+        resp = client.post(
+            "/generate-report",
+            json={"text": "Fire exits are blocked and lockout procedures bypassed."}
+        )
+    assert resp.status_code == 200
+    data = resp.get_json()
+    required_fields = ["title", "summary", "overview",
+                       "key_items", "recommendations",
+                       "generated_at", "is_fallback"]
+    for field in required_fields:
+        assert field in data, f"Missing required field: {field}"
+    assert isinstance(data["key_items"], list)
+    assert isinstance(data["recommendations"], list)
+    assert len(data["key_items"]) > 0
+    assert len(data["recommendations"]) > 0
+
+
+# TEST 4 — /describe handles Groq returning malformed JSON
+def test_describe_fallback_on_malformed_json(client):
+    """
+    If Groq returns plain text instead of JSON, the endpoint must
+    return the fallback response — never HTTP 500.
+    """
+    with patch("routes.describe.cache_get", return_value=None), \
+         patch("routes.describe.cache_set"), \
+         patch("routes.describe.call_groq",
+               return_value="Sorry, I cannot help with that request."):
+        resp = client.post(
+            "/describe",
+            json={"text": "I observed data being leaked to competitors."}
+        )
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["is_fallback"] is True
+    assert data["category"] == "Unknown"
+    assert data["severity"] == "Unknown"
+    assert "generated_at" in data
+
+
+# TEST 5 — /recommend handles Groq returning fewer than 3 recommendations
+def test_recommend_fallback_on_incomplete_recommendations(client):
+    """
+    If Groq returns fewer than 3 recommendations, the endpoint must
+    return the full fallback list — never a partial response.
+    """
+    incomplete_response = {
+        "recommendations": [
+            {"action_type": "Investigation",
+             "description": "Start an investigation.",
+             "priority": "High"},
+        ]
+        # only 1 recommendation — should trigger fallback
+    }
+    with patch("routes.recommend.cache_get", return_value=None), \
+         patch("routes.recommend.cache_set"), \
+         patch("routes.recommend.call_groq",
+               return_value=json.dumps(incomplete_response)):
+        resp = client.post(
+            "/recommend",
+            json={"text": "My manager retaliated after I filed a complaint."}
+        )
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["is_fallback"] is True
+    assert len(data["recommendations"]) == 3
+
+
+# TEST 6 — /query returns empty sources when ChromaDB has no matches
+def test_query_empty_sources_when_no_relevant_docs(client):
+    """
+    When ChromaDB returns no relevant documents, /query must still
+    return a valid response with an empty sources list.
+    Sources must always reflect ChromaDB results, never hallucinated.
+    """
+    mock_groq_response = {
+        "answer": "I could not find specific guidance in the knowledge base.",
+        "sources": ["Hallucinated Source"],
+        "confidence": "Low",
+        "generated_at": "2026-04-23T09:00:00+00:00",
+        "is_fallback": False,
+    }
+    with patch("routes.query.similarity_search", return_value=[]), \
+         patch("routes.query.call_groq",
+               return_value=json.dumps(mock_groq_response)):
+        resp = client.post(
+            "/query",
+            json={"query": "What is the policy on intergalactic misconduct?"}
+        )
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["sources"] == []
+    assert data["confidence"] == "Low"
+    assert "answer" in data
+    assert data["is_fallback"] is False
+
+
+# TEST 7 — All endpoints reject input exceeding 5000 characters
+@pytest.mark.parametrize("endpoint", [
+    "/describe",
+    "/recommend",
+    "/generate-report",
+])
+def test_all_endpoints_reject_oversized_text(client, endpoint):
+    """
+    Input exceeding 5000 characters must be rejected with HTTP 400
+    on all AI endpoints — before any Groq call is made.
+    """
+    oversized_text = "a" * 5001
+    with patch("services.groq_client.call_groq") as mock_groq:
+        resp = client.post(endpoint, json={"text": oversized_text})
+    assert resp.status_code == 400
+    assert "error" in resp.get_json()
+    mock_groq.assert_not_called()
+
+
+# TEST 8 — /health avg_response_ms updates after a request
+def test_health_avg_response_ms_updates_after_request(client):
+    """
+    avg_response_ms must be 0.0 on the very first health check
+    (no requests timed yet), then increase after at least one
+    request is processed and timed.
+    """
+    from app import app as flask_app
+
+    # Clear the deque so prior tests do not affect this one
+    flask_app.config["RESPONSE_TIMES"].clear()
+
+    with patch("services.vector_store.document_count", return_value=10):
+        # First call — deque is empty
+        resp1 = client.get("/health")
+        assert resp1.status_code == 200
+        first_avg = resp1.get_json()["avg_response_ms"]
+        assert first_avg == 0.0
+
+    # Make a request that gets timed by the after_request hook
+    client.get("/ping")
+
+    with patch("services.vector_store.document_count", return_value=10):
+        # Second call — deque now has at least one entry
+        resp2 = client.get("/health")
+        assert resp2.status_code == 200
+        second_avg = resp2.get_json()["avg_response_ms"]
+        assert second_avg >= 0.0
+        assert "avg_response_ms" in resp2.get_json()
